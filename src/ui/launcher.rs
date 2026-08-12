@@ -16,6 +16,7 @@ const ITEM_GAP: i32 = 6;
 const MARGIN_X: i32 = 20;
 const START_Y: i32 = 55;
 const SCREEN_W: i32 = 410;
+const SCREEN_H: i32 = 502;
 
 struct MenuItem {
     name: &'static str,
@@ -45,7 +46,7 @@ impl Launcher {
         Self { scroll_offset: 0, target_scroll: 0 }
     }
 
-    pub fn update(&mut self, swipe: Option<SwipeDirection>, tap: bool, tap_y: u16) -> Option<AppState> {
+    pub fn update(&mut self, swipe: Option<SwipeDirection>, tap: bool, tap_x: u16, tap_y: u16) -> Option<AppState> {
         let max_scroll = ((MENU_ITEMS.len() as i32) * (ITEM_H + ITEM_GAP) - 400).max(0);
 
         match swipe {
@@ -71,6 +72,10 @@ impl Launcher {
 
         // Tap detection
         if tap {
+            let x = tap_x as i32;
+            if x < MARGIN_X || x > (SCREEN_W - MARGIN_X) {
+                return None;
+            }
             let y = tap_y as i32 + self.scroll_offset;
             for (i, item) in MENU_ITEMS.iter().enumerate() {
                 let item_y = START_Y + i as i32 * (ITEM_H + ITEM_GAP);
@@ -83,7 +88,7 @@ impl Launcher {
     }
 
     pub fn render<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D) {
-        let _ = Rectangle::new(Point::zero(), Size::new(410, 502))
+        let _ = Rectangle::new(Point::zero(), Size::new(SCREEN_W as u32, SCREEN_H as u32))
             .into_styled(PrimitiveStyle::with_fill(Rgb565::new(1, 2, 2)))
             .draw(d);
 
@@ -94,7 +99,7 @@ impl Launcher {
         // Menu items
         for (i, item) in MENU_ITEMS.iter().enumerate() {
             let y = START_Y + i as i32 * (ITEM_H + ITEM_GAP) - self.scroll_offset;
-            if y + ITEM_H < 0 || y > 502 { continue; }
+            if y + ITEM_H < 0 || y > SCREEN_H { continue; }
 
             // Dark background with colored accent
             let _ = RoundedRectangle::with_equal_corners(
@@ -114,6 +119,30 @@ impl Launcher {
                 text_style,
                 Alignment::Center,
             ).draw(d);
+        }
+
+        let hint_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
+        let _ = Text::with_alignment("↑↓ scroll   → back", Point::new(SCREEN_W / 2, SCREEN_H - 14), hint_style, Alignment::Center).draw(d);
+
+        let content_h = MENU_ITEMS.len() as i32 * (ITEM_H + ITEM_GAP) - ITEM_GAP;
+        let view_h = SCREEN_H - START_Y - 24;
+        if content_h > view_h {
+            let track_x = SCREEN_W - 10;
+            let track_y = START_Y;
+            let track_h = view_h;
+            let _ = Rectangle::new(Point::new(track_x, track_y), Size::new(3, track_h as u32))
+                .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 6, 6)))
+                .draw(d);
+
+            let max_scroll = (content_h - view_h).max(1);
+            let thumb_h = ((view_h * view_h) / content_h).clamp(28, view_h);
+            let thumb_y = track_y + ((self.scroll_offset * (track_h - thumb_h)) / max_scroll);
+            let _ = RoundedRectangle::with_equal_corners(
+                Rectangle::new(Point::new(track_x - 1, thumb_y), Size::new(5, thumb_h as u32)),
+                Size::new(3, 3),
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::CYAN))
+            .draw(d);
         }
     }
 }

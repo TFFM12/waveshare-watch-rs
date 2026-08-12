@@ -1197,11 +1197,14 @@ async fn main(_spawner: Spawner) {
             }
 
             AppState::Launcher => {
-                // Track touch Y for tap detection
+                // Track touch coordinate for tap detection
                 if let Ok((point, _)) = touch.poll() {
-                    if let Some(tp) = point { last_touch_y = tp.y; }
+                    if let Some(tp) = point {
+                        last_touch_x = tp.x;
+                        last_touch_y = tp.y;
+                    }
                 }
-                if let Some(new_state) = launcher.update(swipe_event, tap_event, last_touch_y) {
+                if let Some(new_state) = launcher.update(swipe_event, tap_event, last_touch_x, last_touch_y) {
                     app_state = new_state;
                     match app_state {
                         AppState::Snake => snake_game.setup(),
