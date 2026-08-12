@@ -13,6 +13,7 @@ pub mod maze;
 pub mod settings;
 pub mod mp3player;
 pub mod smarthome;
+pub mod bluetooth_audio;
 
 /// Input state passed to apps each frame
 pub struct AppInput {
@@ -49,5 +50,6 @@ pub enum AppState {
     Maze,
     Mp3Player,
     SmartHome,
+    BluetoothAudio,
     Settings,
 }

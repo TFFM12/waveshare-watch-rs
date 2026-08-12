@@ -81,3 +81,85 @@ pub fn stop_advertising<W: Write>(hci: &mut W) -> Result<(), W::Error> {
     ])?;
     Ok(())
 }
+
+/// Parse a BLE MAC address from "AA:BB:CC:DD:EE:FF" text.
+/// Returns little-endian bytes as expected by HCI commands.
+pub fn parse_peer_addr(s: &str) -> Option<[u8; 6]> {
+    let mut out = [0u8; 6];
+    let mut idx = 0usize;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+
+    while i + 1 < bytes.len() && idx < 6 {
+        let hi = hex_nibble(bytes[i])?;
+        let lo = hex_nibble(bytes[i + 1])?;
+        // HCI expects peer address in little-endian order.
+        out[5 - idx] = (hi << 4) | lo;
+        idx += 1;
+        i += 2;
+        if idx < 6 {
+            if i >= bytes.len() || bytes[i] != b':' {
+                return None;
+            }
+            i += 1;
+        }
+    }
+
+    if idx == 6 && i == bytes.len() {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Request a BLE LE connection to a specific peer.
+/// This sends HCI LE Create Connection (0x200D).
+pub fn connect_peer<W: Write>(
+    hci: &mut W,
+    peer_addr_le: [u8; 6],
+    peer_is_random_addr: bool,
+) -> Result<(), W::Error> {
+    let peer_addr_type = if peer_is_random_addr { 0x01 } else { 0x00 };
+    hci.write_all(&[
+        0x01,       // H4: command packet
+        0x0D, 0x20, // LE Create Connection
+        25,         // param length
+        0x10, 0x00, // scan interval (16 * 0.625ms = 10ms)
+        0x10, 0x00, // scan window
+        0x00,       // initiator filter policy: use peer address below
+        peer_addr_type,
+        peer_addr_le[0],
+        peer_addr_le[1],
+        peer_addr_le[2],
+        peer_addr_le[3],
+        peer_addr_le[4],
+        peer_addr_le[5],
+        0x00,       // own address type: public
+        0x18, 0x00, // conn interval min (30ms)
+        0x28, 0x00, // conn interval max (50ms)
+        0x00, 0x00, // conn latency
+        0xC8, 0x00, // supervision timeout (2s)
+        0x00, 0x00, // min CE length
+        0x00, 0x00, // max CE length
+    ])?;
+    Ok(())
+}
+
+/// Cancel an ongoing BLE LE connection procedure.
+pub fn cancel_connect<W: Write>(hci: &mut W) -> Result<(), W::Error> {
+    hci.write_all(&[
+        0x01,
+        0x0E, 0x20, // LE Create Connection Cancel
+        0,
+    ])?;
+    Ok(())
+}
+
+fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}

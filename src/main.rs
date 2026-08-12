@@ -57,6 +57,7 @@ use crate::ui::launcher::Launcher;
 use crate::apps::settings::SettingsApp;
 use crate::apps::mp3player::Mp3Player;
 use crate::apps::smarthome::SmartHomeApp;
+use crate::apps::bluetooth_audio::{BluetoothAudioApp, OutputMode};
 use crate::peripherals::audio::{Es8311, fill_beep_buffer};
 
 // Network runner task (must be spawned for WiFi to work)
@@ -508,6 +509,15 @@ async fn main(_spawner: Spawner) {
     let mut settings_app = SettingsApp::new();
     let mut mp3_player = Mp3Player::new();
     let mut smarthome_app = SmartHomeApp::new();
+    let mut bt_audio_app = BluetoothAudioApp::new();
+    let bt_target_raw = option_env!("BT_AUDIO_PEER").unwrap_or("");
+    let bt_target_addr = crate::peripherals::ble::parse_peer_addr(bt_target_raw);
+    let bt_target_random = option_env!("BT_AUDIO_PEER_RANDOM").unwrap_or("0") == "1";
+    if bt_target_addr.is_some() {
+        bt_audio_app.set_target_label(bt_target_raw);
+    } else {
+        bt_audio_app.set_target_label("NOT CONFIGURED");
+    }
     if !mp3_files.is_empty() {
         mp3_player.set_track_count(mp3_files.len());
         mp3_player.set_track_name(&mp3_files[0]);
@@ -592,6 +602,8 @@ async fn main(_spawner: Spawner) {
     // BLE state
     let mut ble_on: bool = false;
     let mut ble_toggle_request: bool = false;
+    let mut bt_audio_connect_request: bool = false;
+    let mut bt_audio_disconnect_request: bool = false;
     // Power-down the IMU at boot — only enable when a consumer (gyro toggle, game, sensors page) needs it.
     let _ = imu.power_down();
     let mut imu_powered = false;
@@ -635,6 +647,7 @@ async fn main(_spawner: Spawner) {
                     Page::Power   => Duration::from_secs(1),
                 },
                 AppState::Launcher | AppState::Settings | AppState::Mp3Player
+                | AppState::BluetoothAudio
                 | AppState::SmartHome => Duration::from_millis(100),
                 // Flappy previously ran at 8 ms (~125 Hz). The panel can't
                 // even display that (VSync is ~33 ms) so the extra ticks
@@ -864,6 +877,38 @@ async fn main(_spawner: Spawner) {
                 if app_state == AppState::Watchface {
                     watchface.force_redraw();
                     page_dirty = true;
+                }
+
+                if bt_audio_connect_request {
+                    bt_audio_connect_request = false;
+                    if let Some(addr) = bt_target_addr {
+                        if !ble_on {
+                            if crate::peripherals::ble::start_advertising(&mut ble_connector).is_ok() {
+                                ble_on = true;
+                                watchface.ble_on = true;
+                                power_stats.ble_on = true;
+                            }
+                        }
+                        match crate::peripherals::ble::connect_peer(&mut ble_connector, addr, bt_target_random) {
+                            Ok(()) => {
+                                bt_audio_app.set_connected(true);
+                                println!("[BLE-AUDIO] Connect request sent");
+                            }
+                            Err(_) => {
+                                bt_audio_app.set_connected(false);
+                                println!("[BLE-AUDIO] Connect request failed");
+                            }
+                        }
+                    } else {
+                        bt_audio_app.set_connected(false);
+                        println!("[BLE-AUDIO] Missing BT_AUDIO_PEER (AA:BB:CC:DD:EE:FF)");
+                    }
+                }
+                if bt_audio_disconnect_request {
+                    bt_audio_disconnect_request = false;
+                    let _ = crate::peripherals::ble::cancel_connect(&mut ble_connector);
+                    bt_audio_app.set_connected(false);
+                    println!("[BLE-AUDIO] Disconnect/cancel request sent");
                 }
             }
         }
@@ -1171,7 +1216,14 @@ async fn main(_spawner: Spawner) {
                                 // Unmute codec, then raise PA amplifier, then play
                                 let _ = audio_codec.unmute();
                                 delay.delay_millis(2); // let codec stabilize before enabling amp
-                                pa_en.set_high();
+                                let use_speaker = match bt_audio_app.output_mode() {
+                                    OutputMode::Auto => !bt_audio_app.headphones_connected(),
+                                    OutputMode::Speaker => true,
+                                    OutputMode::Headphones => false,
+                                };
+                                if use_speaker {
+                                    pa_en.set_high();
+                                }
                                 if let Ok(transfer) = i2s_tx.write_dma(unsafe { &BEEP_BUF }) {
                                     let _ = transfer.wait();
                                 }
@@ -1213,6 +1265,7 @@ async fn main(_spawner: Spawner) {
                         AppState::Flappy => flappy_game.setup(),
                         AppState::Maze => maze_game.setup(),
                         AppState::Mp3Player => mp3_player.setup(),
+                        AppState::BluetoothAudio => bt_audio_app.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
                         AppState::Settings => {}
                         AppState::Watchface => { watchface.force_redraw(); page_dirty = true; }
@@ -1302,6 +1355,26 @@ async fn main(_spawner: Spawner) {
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(200);
+                }
+                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
+            }
+
+            AppState::BluetoothAudio => {
+                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                bt_audio_app.update(&input);
+                if tap_event {
+                    bt_audio_app.handle_tap(last_touch_x, last_touch_y);
+                }
+                if let Ok((Some(tp), _)) = touch.poll() {
+                    last_touch_x = tp.x;
+                    last_touch_y = tp.y;
+                }
+                bt_audio_connect_request |= bt_audio_app.take_connect_request();
+                bt_audio_disconnect_request |= bt_audio_app.take_disconnect_request();
+                bt_audio_app.render(&mut fb);
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now + Duration::from_millis(100);
                 }
                 if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
