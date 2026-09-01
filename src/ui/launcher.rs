@@ -26,6 +26,8 @@ struct MenuItem {
 }
 
 const MENU_ITEMS: &[MenuItem] = &[
+    MenuItem { name: "Media", state: AppState::Media, bg_color: Rgb565::new(4, 8, 14), text_color: Rgb565::WHITE },
+    MenuItem { name: "Gyro", state: AppState::Gyro, bg_color: Rgb565::new(3, 12, 3), text_color: Rgb565::WHITE },
     MenuItem { name: "Snake", state: AppState::Snake, bg_color: Rgb565::new(2, 20, 2), text_color: Rgb565::GREEN },
     MenuItem { name: "2048", state: AppState::Game2048, bg_color: Rgb565::new(15, 10, 0), text_color: Rgb565::YELLOW },
     MenuItem { name: "Tetris", state: AppState::Tetris, bg_color: Rgb565::new(0, 10, 15), text_color: Rgb565::CYAN },
@@ -40,11 +42,16 @@ const MENU_ITEMS: &[MenuItem] = &[
 pub struct Launcher {
     scroll_offset: i32,
     target_scroll: i32, // smooth scroll target
+    wallpaper_seed: u8,
 }
 
 impl Launcher {
     pub fn new() -> Self {
-        Self { scroll_offset: 0, target_scroll: 0 }
+        Self { scroll_offset: 0, target_scroll: 0, wallpaper_seed: 0 }
+    }
+
+    pub fn set_wallpaper_seed(&mut self, seed: u8) {
+        self.wallpaper_seed = seed;
     }
 
     pub fn update(&mut self, swipe: Option<SwipeDirection>, tap: bool, tap_x: u16, tap_y: u16) -> Option<AppState> {
@@ -89,8 +96,15 @@ impl Launcher {
     }
 
     pub fn render<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D) {
+        let bg = match self.wallpaper_seed % 5 {
+            0 => Rgb565::new(1, 2, 2),
+            1 => Rgb565::new(1, 3, 6),
+            2 => Rgb565::new(3, 1, 6),
+            3 => Rgb565::new(2, 4, 1),
+            _ => Rgb565::new(5, 2, 1),
+        };
         let _ = Rectangle::new(Point::zero(), Size::new(SCREEN_W as u32, SCREEN_H as u32))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(1, 2, 2)))
+            .into_styled(PrimitiveStyle::with_fill(bg))
             .draw(d);
 
         // Title

@@ -499,12 +499,8 @@ impl WatchFace {
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(d)?;
 
-        // Anti burn-in: shift the time block by a few pixels based on the current minute.
-        let shift_x = ((self.minutes as i32) % 9) - 4;
-        let shift_y = ((self.minutes as i32 / 9) % 9) - 4;
-
-        let cx = SCREEN_CX + shift_x;
-        let cy = h / 2 - 32 + shift_y;
+        let cx = SCREEN_CX;
+        let cy = h / 2 - 32;
 
         // HH:MM only (no seconds, no extra widgets).
         // We use a slightly dimmed white (CSS_LIGHT_GRAY = ~0.8 brightness) to further reduce power
@@ -557,18 +553,6 @@ impl WatchFace {
                 Self::draw_ble_icon(d, 96, 10, Rgb565::new(0, 16, 31))?;
             }
 
-            // === BLE toggle (above WiFi) ===
-            Self::draw_ble_toggle(d, self.ble_on)?;
-
-            // === WiFi toggle switch (iOS-style pill) ===
-            Self::draw_wifi_toggle(d, self.wifi_connected)?;
-
-            // === CPU freq button (below WiFi toggle) ===
-            Self::draw_cpu_button(d, self.cpu_mhz)?;
-
-            // === Brightness slider (horizontal bar) ===
-            Self::draw_brightness_slider(d, self.brightness)?;
-
             // Title
             Text::with_alignment("RUST WATCH", Point::new(cx, 38), cyan, Alignment::Center).draw(d)?;
 
@@ -584,16 +568,7 @@ impl WatchFace {
             // Battery bar + percentage (more space below date)
             self.draw_battery(d, cx, 175)?;
 
-            // Gyro section (only when enabled)
-            if self.gyro_enabled {
-                Circle::new(Point::new(GYRO_CX - GYRO_R, GYRO_CY - GYRO_R), (GYRO_R * 2) as u32)
-                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_DARK_GRAY, 2))
-                    .draw(d)?;
-                Text::with_alignment("GYRO", Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20), dim, Alignment::Center).draw(d)?;
-                self.draw_gyro_ball(d)?;
-            } else {
-                Text::with_alignment("TAP FOR GYRO", Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20), dim, Alignment::Center).draw(d)?;
-            }
+            Text::with_alignment("Swipe up for launcher", Point::new(GYRO_CX, GYRO_CY + 20), dim, Alignment::Center).draw(d)?;
 
             // Apps button (bottom center)
             Self::draw_apps_button(d)?;

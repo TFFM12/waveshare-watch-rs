@@ -56,6 +56,8 @@ use crate::apps::maze::MazeGame;
 use crate::ui::launcher::Launcher;
 use crate::apps::settings::SettingsApp;
 use crate::apps::mp3player::Mp3Player;
+use crate::apps::media::MediaApp;
+use crate::apps::gyro::GyroApp;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::bluetooth_audio::{BluetoothAudioApp, OutputMode};
 use crate::peripherals::audio::{Es8311, fill_beep_buffer};
@@ -145,6 +147,10 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
         m += 1;
     }
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
+}
+
+fn is_image_ext(ext: &str) -> bool {
+    matches!(ext, "bmp" | "png" | "jpg" | "jpeg")
 }
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -307,8 +313,8 @@ async fn main(_spawner: Spawner) {
     use embedded_hal_bus::spi::ExclusiveDevice;
     let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
     let mut sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
-    let mut sd_ok = false;
     let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    let mut media_images: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     match sd_card.num_bytes() {
         Ok(size) => {
             println!("[SD] Card {}MB", size / 1024 / 1024);
@@ -338,7 +344,6 @@ async fn main(_spawner: Spawner) {
                         });
                         println!("[SD] {} files found", mp3_files.len());
                         let _ = volume_mgr.close_dir(mp3_dir);
-                        sd_ok = true;
                     } else {
                         // Try lowercase
                         if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
@@ -354,11 +359,41 @@ async fn main(_spawner: Spawner) {
                             });
                             println!("[SD] {} files found", mp3_files.len());
                             let _ = volume_mgr.close_dir(mp3_dir);
-                            sd_ok = true;
                         } else {
                             println!("[SD] No /mp3/ or /MP3/ folder");
                         }
                     }
+
+                    for dir_name in ["MEDIA", "media", "WALLPAPER", "wallpaper", "IMAGES", "images"] {
+                        if let Ok(img_dir) = volume_mgr.open_dir(root_dir, dir_name) {
+                            println!("[SD] Scanning /{}/", dir_name);
+                            let _ = volume_mgr.iterate_dir(img_dir, |entry| {
+                                if !entry.attributes.is_directory() {
+                                    let name = core::str::from_utf8(&entry.name.base_name()).unwrap_or("?");
+                                    let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
+                                    let ext_l = ext.trim().to_ascii_lowercase();
+                                    if is_image_ext(ext_l.as_str()) {
+                                        let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                        media_images.push(full);
+                                    }
+                                }
+                            });
+                            let _ = volume_mgr.close_dir(img_dir);
+                        }
+                    }
+
+                    let _ = volume_mgr.iterate_dir(root_dir, |entry| {
+                        if !entry.attributes.is_directory() {
+                            let name = core::str::from_utf8(&entry.name.base_name()).unwrap_or("?");
+                            let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
+                            let ext_l = ext.trim().to_ascii_lowercase();
+                            if is_image_ext(ext_l.as_str()) {
+                                let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                media_images.push(full);
+                            }
+                        }
+                    });
+                    println!("[SD] {} imagens encontradas", media_images.len());
                     let _ = volume_mgr.close_dir(root_dir);
                 } else {
                     println!("[SD] Can't open root dir");
@@ -508,6 +543,8 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut settings_app = SettingsApp::new();
     let mut mp3_player = Mp3Player::new();
+    let mut media_app = MediaApp::new();
+    let mut gyro_app = GyroApp::new();
     let mut smarthome_app = SmartHomeApp::new();
     let mut bt_audio_app = BluetoothAudioApp::new();
     let bt_target_raw = option_env!("BT_AUDIO_PEER").unwrap_or("");
@@ -522,6 +559,10 @@ async fn main(_spawner: Spawner) {
         mp3_player.set_track_count(mp3_files.len());
         mp3_player.set_track_name(&mp3_files[0]);
     }
+    media_app.set_images(media_images.clone());
+    settings_app.set_wallpaper_options(media_images.clone());
+    settings_app.set_wallpaper_index(media_app.selected_index());
+    launcher.set_wallpaper_seed(media_app.selected_index() as u8);
     let mut last_touch_y: u16 = 0;
     let mut last_touch_x: u16 = 0;
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
@@ -558,7 +599,9 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
+        settings_app.set_current_time(dt.hours, dt.minutes);
     }
+    settings_app.set_runtime_state(false, false, watchface.cpu_mhz, watchface.brightness);
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
     fb.flush(&mut display);
@@ -635,11 +678,7 @@ async fn main(_spawner: Spawner) {
                 AppState::Watchface => match current_page {
                     // Clock page: 1 Hz when gyro is off (only seconds change),
                     // 33 ms when gyro is on (smooth ball animation).
-                    Page::Clock => if watchface.gyro_enabled {
-                        Duration::from_millis(33)
-                    } else {
-                        Duration::from_secs(1)
-                    },
+                    Page::Clock => Duration::from_secs(1),
                     Page::Sensors => Duration::from_millis(100), // 10 Hz IMU display
                     Page::System  => Duration::from_secs(2),     // basically static
                     // Power page refreshes at 1 Hz — fast enough to see
@@ -647,6 +686,7 @@ async fn main(_spawner: Spawner) {
                     Page::Power   => Duration::from_secs(1),
                 },
                 AppState::Launcher | AppState::Settings | AppState::Mp3Player
+                | AppState::Media | AppState::Gyro
                 | AppState::BluetoothAudio
                 | AppState::SmartHome => Duration::from_millis(100),
                 // Flappy previously ran at 8 ms (~125 Hz). The panel can't
@@ -679,7 +719,7 @@ async fn main(_spawner: Spawner) {
         // When screen is off OR no consumer needs it, we power-down the IMU completely
         // (CTRL7 = 0). The QMI8658's gyro alone draws ~1.5 mA so this is a meaningful win.
         let need_imu = screen_state >= 2
-            && (watchface.gyro_enabled
+            && (app_state == AppState::Gyro
                 || app_state == AppState::Maze
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
@@ -751,12 +791,7 @@ async fn main(_spawner: Spawner) {
                 if let Some(tp) = point {
                     last_touch_x = tp.x;
                     last_touch_y = tp.y;
-                    // Don't start a page swipe if the finger is on the
-                    // brightness slider — horizontal drag there adjusts
-                    // brightness, not pages.
-                    let on_slider = current_page == Page::Clock
-                        && WatchFace::brightness_from_tap(tp.x, tp.y).is_some();
-                    if !swiping && !on_slider {
+                    if !swiping {
                         if swipe_start_x == 0 { swipe_start_x = tp.x as i32; }
                         else {
                             let dx = tp.x as i32 - swipe_start_x;
@@ -1137,43 +1172,8 @@ async fn main(_spawner: Spawner) {
 
                 // Tap/touch dispatch on the Clock page.
                 if current_page == Page::Clock {
-                    // Brightness slider — responds to both taps and held
-                    // drags so you can slide your finger along it.
-                    if let Some(bri) = WatchFace::brightness_from_tap(last_touch_x, last_touch_y) {
-                        if (touch_int.is_low() || tap_event) && bri != watchface.brightness {
-                            watchface.brightness = bri;
-                            display.set_brightness(bri);
-                            watchface.force_redraw();
-                            page_dirty = true;
-                        }
-                    } else if tap_event {
-                        // BLE toggle
-                        if WatchFace::is_ble_zone(last_touch_x, last_touch_y) {
-                            ble_toggle_request = true;
-                            watchface.force_redraw();
-                            page_dirty = true;
-                        // WiFi toggle
-                        } else if WatchFace::is_wifi_zone(last_touch_x, last_touch_y) {
-                            wifi_toggle_request = true;
-                            watchface.force_redraw();
-                            page_dirty = true;
-                        // CPU frequency cycle (live DVFS)
-                        } else if WatchFace::is_cpu_zone(last_touch_x, last_touch_y) {
-                            watchface.cycle_cpu();
-                            let actual = crate::peripherals::cpu_clock::set_cpu_mhz(watchface.cpu_mhz);
-                            watchface.cpu_mhz = actual;
-                            power_stats.cpu_mhz = actual;
-                            println!("CPU freq: {}MHz (live)", actual);
-                            watchface.force_redraw();
-                            page_dirty = true;
-                        // Apps launcher
-                        } else if WatchFace::is_apps_zone(last_touch_x, last_touch_y) {
-                            app_state = AppState::Launcher;
-                        // Gyro toggle
-                        } else if WatchFace::is_gyro_zone(last_touch_y) {
-                            let enabled = watchface.toggle_gyro();
-                            println!("Gyro: {}", if enabled { "ON" } else { "OFF" });
-                        }
+                    if tap_event && WatchFace::is_apps_zone(last_touch_x, last_touch_y) {
+                        app_state = AppState::Launcher;
                     }
                 }
 
@@ -1265,6 +1265,8 @@ async fn main(_spawner: Spawner) {
                         AppState::Flappy => flappy_game.setup(),
                         AppState::Maze => maze_game.setup(),
                         AppState::Mp3Player => mp3_player.setup(),
+                        AppState::Media => media_app.setup(),
+                        AppState::Gyro => gyro_app.setup(),
                         AppState::BluetoothAudio => bt_audio_app.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
                         AppState::Settings => {}
@@ -1359,6 +1361,31 @@ async fn main(_spawner: Spawner) {
                 if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
+            AppState::Media => {
+                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                media_app.update(&input);
+                let wall_idx = media_app.selected_index();
+                settings_app.set_wallpaper_index(wall_idx);
+                launcher.set_wallpaper_seed(wall_idx as u8);
+                media_app.render(&mut fb);
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now + Duration::from_millis(100);
+                }
+                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
+            }
+
+            AppState::Gyro => {
+                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                gyro_app.update(&input);
+                gyro_app.render(&mut fb);
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now + Duration::from_millis(66);
+                }
+                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
+            }
+
             AppState::BluetoothAudio => {
                 let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
                 bt_audio_app.update(&input);
@@ -1381,15 +1408,58 @@ async fn main(_spawner: Spawner) {
 
             AppState::Settings => {
                 settings_app.update(dt_ms.max(1));
-                // For T9: detect touch down via GPIO38 for rapid multi-tap
+                settings_app.set_runtime_state(wifi_on_request, ble_on, watchface.cpu_mhz, watchface.brightness);
+                if let Ok(dt) = rtc.get_time() {
+                    settings_app.set_current_time(dt.hours, dt.minutes);
+                }
                 if tap_event {
                     settings_app.handle_tap(last_touch_x, last_touch_y);
                 }
-                // Also read live touch position for keyboard area
                 if let Ok((Some(tp), _)) = touch.poll() {
                     last_touch_x = tp.x;
                     last_touch_y = tp.y;
                 }
+
+                if settings_app.take_wifi_toggle_request() {
+                    wifi_toggle_request = true;
+                }
+                if settings_app.take_ble_toggle_request() {
+                    ble_toggle_request = true;
+                }
+                if settings_app.take_cpu_cycle_request() {
+                    watchface.cycle_cpu();
+                    let actual = crate::peripherals::cpu_clock::set_cpu_mhz(watchface.cpu_mhz);
+                    watchface.cpu_mhz = actual;
+                    power_stats.cpu_mhz = actual;
+                    watchface.force_redraw();
+                    page_dirty = true;
+                }
+                if let Some(bri) = settings_app.take_brightness_request() {
+                    watchface.brightness = bri;
+                    display.set_brightness(bri);
+                    watchface.force_redraw();
+                    page_dirty = true;
+                }
+                if let Some((h, m)) = settings_app.take_apply_time_request() {
+                    if let Ok(current) = rtc.get_time() {
+                        let manual = DateTime::new(current.year, current.month, current.day, h, m, 0);
+                        let _ = rtc.set_time(&manual);
+                        watchface.update_time(h, m, 0);
+                        watchface.update_date(current.day, current.month, current.year);
+                        watchface.force_redraw();
+                        page_dirty = true;
+                    }
+                }
+                if let Some(idx) = settings_app.take_wallpaper_request() {
+                    media_app.set_selected_index(idx);
+                    launcher.set_wallpaper_seed(idx as u8);
+                }
+                if settings_app.take_open_gyro_request() {
+                    app_state = AppState::Gyro;
+                    gyro_app.setup();
+                    continue;
+                }
+
                 settings_app.render(&mut fb);
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
